@@ -13,7 +13,7 @@ handle_command to speak them. Protocol replies to implement:
 Usage errors mirror the existing commands, e.g. "ERROR usage: INCR <key>".
 """
 
-from kvstore.server import handle_command
+from kvstore.server import Messages, handle_command
 from kvstore.store import KVStore
 
 
@@ -55,3 +55,23 @@ def test_ttl_minus_one_when_no_expiry():
 def test_ttl_not_found_for_missing_key():
     s = KVStore()
     assert handle_command(s, "TTL nope") == "NOT_FOUND"
+
+
+# --- Bad-input regression: malformed commands must return errors, never crash ---
+
+
+def test_incr_on_non_numeric_value_errors():
+    s = KVStore()
+    s.set("word", "hello")  # value isn't an integer
+    assert handle_command(s, "INCR word") == Messages.ERROR_NOT_A_NUMBER.value.format("word")
+
+
+def test_incr_with_non_numeric_amount_errors():
+    s = KVStore()
+    assert handle_command(s, "INCR n xx") == Messages.VALUE_ERROR_INCR.value.format("xx")
+
+
+def test_expire_with_non_numeric_seconds_errors():
+    s = KVStore()
+    s.set("k", "v")
+    assert handle_command(s, "EXPIRE k abc") == Messages.ERROR_NOT_A_NUMBER.value.format("abc")

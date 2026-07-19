@@ -74,3 +74,48 @@ def test_ttl_raises_for_missing_key():
     s = KVStore()
     with pytest.raises(KeyNotFoundError):
         s.ttl("nope")
+
+
+# --- Regression tests: _data and _expiry must never drift out of sync ---
+
+
+def test_delete_clears_ttl_and_does_not_crash_later():
+    """Regression for the delete-with-TTL bug.
+
+    Deleting a key with a TTL must also remove its _expiry entry. Otherwise a later
+    lazy-purge sees the stale expiry, tries to del a key that's no longer in _data,
+    and crashes with KeyError.
+    """
+    s = KVStore()
+    s.set("k", "v", ttl=0.1)
+    s.delete("k")
+    assert "k" not in s._expiry  # the delete cleared the expiry entry too
+    time.sleep(0.15)  # let the (would-be) stale expiry lapse
+    assert s.exists("k") is False  # must NOT raise KeyError
+    with pytest.raises(KeyNotFoundError):
+        s.get("k")  # a clean KeyNotFoundError, not a KeyError crash
+
+
+def test_expire_on_already_expired_key_returns_false():
+    s = KVStore()
+    s.set("k", "v", ttl=0.1)
+    time.sleep(0.15)
+    # The key has lapsed; you can't attach a fresh TTL to something that's gone.
+    assert s.expire("k", 100) is False
+
+
+def test_ttl_raises_after_expiry():
+    s = KVStore()
+    s.set("k", "v", ttl=0.1)
+    time.sleep(0.15)
+    with pytest.raises(KeyNotFoundError):
+        s.ttl("k")
+
+
+def test_incr_refreshes_read_of_expired_key():
+    """incr on an expired key should treat it as absent (start from 0), not reuse
+    the stale value."""
+    s = KVStore()
+    s.set("counter", "41", ttl=0.1)
+    time.sleep(0.15)
+    assert s.incr("counter") == 1  # expired -> starts from 0, not 42

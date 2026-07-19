@@ -152,10 +152,10 @@ def handle_command(store: KVStore, line: str) -> str:
                 amount = int(command_list[2])
             except ValueError:
                 return Messages.VALUE_ERROR_INCR.value.format(command_list[2])
-            try:
-                total = store.incr(key, amount)
-            except ValueError:
-                return Messages.ERROR_NOT_A_NUMBER.value.format(key)
+        try:
+            total = store.incr(key, amount)
+        except ValueError:
+            return Messages.ERROR_NOT_A_NUMBER.value.format(key)
         return Messages.GET_VALUE.value.format(total)
     else:
         return Messages.ERROR_UNKNOWN_COMMAND.value.format(op)
