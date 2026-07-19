@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kvstore.store import KVStore, KeyNotFoundError
+from kvstore.store import KVStore
 
 
 class PersistentKVStore(KVStore):
@@ -68,11 +68,11 @@ class PersistentKVStore(KVStore):
         during replay, or you'd append the whole history back onto the log every startup.
         """
         if self._path.exists():
-            with open(self._path, "r") as f:
+            with open(self._path) as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        record= json.loads(line)
+                        record = json.loads(line)
                         if record["op"] == "set":
                             super().set(record["key"], record["value"])
                         elif record["op"] == "delete":
@@ -94,8 +94,5 @@ class PersistentKVStore(KVStore):
         delete doesn't leave a junk line in the log. super().delete() already
         raises KeyNotFoundError for a missing key — let that happen first.
         """
-        try:
-            super().delete(key)
-            self._append({"op": "delete", "key": key})
-        except KeyNotFoundError:
-            raise
+        super().delete(key)
+        self._append({"op": "delete", "key": key})

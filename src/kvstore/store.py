@@ -14,9 +14,11 @@ from __future__ import annotations
 
 class KeyNotFoundError(KeyError):
     """Raised when a key does not exist in the store."""
+
     def __init__(self, message: str, key: str):
         super().__init__(message)
         self.key = key
+
 
 class KVStore:
     def __init__(self) -> None:
