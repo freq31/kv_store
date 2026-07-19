@@ -78,15 +78,19 @@ class PersistentKVStore(KVStore):
                         elif record["op"] == "delete":
                             super().delete(record["key"])
 
-    def set(self, key: str, value: str) -> None:
+    def set(self, key: str, value: str, ttl: float | None = None) -> None:
         """Persist the write, then apply it in memory.
 
         Order matters: log to disk FIRST (durability), THEN update memory by
         calling super().set(key, value).
+
+        NOTE (M5): `ttl` is forwarded so TTL works in-memory on the persistent store,
+        but the log does NOT yet record the expiry — so a TTL set here is lost on
+        restart. Persisting expiry (a new log field + replay handling) is Milestone 6.
         """
         with self._lock:
             self._append({"op": "set", "key": key, "value": value})
-            super().set(key, value)
+            super().set(key, value, ttl)
 
     def delete(self, key: str) -> None:
         """Persist the delete, then apply it in memory.

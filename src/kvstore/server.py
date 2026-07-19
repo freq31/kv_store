@@ -114,6 +114,36 @@ def handle_command(store: KVStore, line: str) -> str:
             return Messages.TRUE.value
         else:
             return Messages.FALSE.value
+    elif op == "EXPIRE":
+        if len(command_list) < 3:
+            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+        key = command_list[1]
+        seconds = float(command_list[2])
+        found = store.expire(key, seconds)
+        if found:
+            return Messages.OK.value
+        else:
+            return Messages.NOT_FOUND.value
+    elif op == "TTL":
+        if len(command_list) < 2:
+            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+        key = command_list[1]
+        try:
+            ttl = store.ttl(key)
+            if not ttl:
+                ttl = -1
+            return Messages.GET_VALUE.value.format(int(ttl))
+        except KeyNotFoundError:
+            return Messages.NOT_FOUND.value
+    elif op == "INCR":
+        if len(command_list) < 2:
+            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+        key = command_list[1]
+        amount = 1
+        if len(command_list) == 3:
+            amount = int(command_list[2])
+        total = store.incr(key, amount)
+        return Messages.GET_VALUE.value.format(total)
     else:
         return Messages.ERROR_UNKNOWN_COMMAND.value.format(op)
 
