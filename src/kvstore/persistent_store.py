@@ -84,8 +84,9 @@ class PersistentKVStore(KVStore):
         Order matters: log to disk FIRST (durability), THEN update memory by
         calling super().set(key, value).
         """
-        self._append({"op": "set", "key": key, "value": value})
-        super().set(key, value)
+        with self._lock:
+            self._append({"op": "set", "key": key, "value": value})
+            super().set(key, value)
 
     def delete(self, key: str) -> None:
         """Persist the delete, then apply it in memory.
@@ -94,5 +95,41 @@ class PersistentKVStore(KVStore):
         delete doesn't leave a junk line in the log. super().delete() already
         raises KeyNotFoundError for a missing key — let that happen first.
         """
-        super().delete(key)
-        self._append({"op": "delete", "key": key})
+        with self._lock:
+            super().delete(key)
+            self._append({"op": "delete", "key": key})
+
+    def compact(self) -> None:
+        """Rewrite the log so it holds only the CURRENT state — one 'set' per key.
+
+        THE PROBLEM: the log only ever grows. Set the same key 1000 times and the
+        file has 1000 lines, even though memory holds just 1 key. That wastes disk
+        and makes startup (replay) slow. Compaction rebuilds a minimal log from the
+        current in-memory state and throws the history away.
+
+        Do it SAFELY so a crash mid-compaction can't destroy your data:
+          1. Take self._lock (no writes should sneak in while we rebuild).
+          2. Write current self._data to a NEW temporary file — one 'set' record per key.
+             (A deleted key simply isn't in self._data, so it won't be written.)
+          3. os.replace(tmp_path, self._path) to swap it in. os.replace is ATOMIC on
+             the same filesystem: at every instant readers see either the whole old
+             file or the whole new file — never a half-written one. (Contrast: if you
+             truncated and rewrote the real file in place, a crash halfway would
+             leave a corrupt log.)
+
+        You'll need `import os` at the top of the file for os.replace.
+        Hint for the temp path:  tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+
+        After compaction: the log has exactly len(self._data) lines, and the data is
+        unchanged — including after a restart.
+        """
+        import os
+
+        with self._lock:
+            temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+            with open(temp_path, "w") as f:
+                for key, value in self._data.items():
+                    record = {"op": "set", "key": key, "value": value}
+                    f.write(json.dumps(record) + "\n")
+
+            os.replace(temp_path, self._path)
