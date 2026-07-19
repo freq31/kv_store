@@ -79,7 +79,8 @@ def test_get_without_key_is_usage_error():
 def test_server_end_to_end():
     server = KVServer("127.0.0.1", 0, KVStore())  # port 0 = pick any free port
     port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # Small poll interval so server.shutdown() returns almost instantly (default is 0.5s).
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.02), daemon=True)
     thread.start()
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
@@ -90,3 +91,4 @@ def test_server_end_to_end():
     finally:
         server.shutdown()
         server.server_close()
+        thread.join(timeout=5)  # ensure the server thread is fully stopped before returning

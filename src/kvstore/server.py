@@ -141,6 +141,7 @@ class KVServer(socketserver.ThreadingTCPServer):
     """A threaded TCP server that shares one store across all client connections."""
 
     allow_reuse_address = True  # lets you restart quickly without "address in use"
+    daemon_threads = True  # handler threads die with the process — they can never hang shutdown
 
     def __init__(self, host: str, port: int, store: KVStore) -> None:
         super().__init__((host, port), _Handler)
