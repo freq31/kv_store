@@ -67,6 +67,7 @@ class KVStore:
             if key not in self._data:
                 raise KeyNotFoundError(f"Key '{key}' not found.", key)
             del self._data[key]
+            self._expiry.pop(key, None)
 
     def exists(self, key: str) -> bool:
         """Return True if `key` is in the store, else False."""
@@ -122,7 +123,7 @@ class KVStore:
         """
         with self._lock:
             if key in self._expiry and time.time() >= self._expiry[key]:
-                del self._data[key]
+                self._data.pop(key, None)
                 del self._expiry[key]
 
     def expire(self, key: str, seconds: float) -> bool:

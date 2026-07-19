@@ -56,8 +56,12 @@ class Messages(Enum):
     ERROR_UNKNOWN_COMMAND = "ERROR unknown command: {}"
     ERROR_USAGE_SET = "ERROR usage: SET <key> <value>"
     ERROR_USAGE_GET_DEL_EXISTS = "ERROR usage: {} <key>"
+    ERROR_USAGE_EXPIRE = "ERROR usage: EXPIRE <key> <seconds>"
+    ERROR_USAGE_INCR = "ERROR usage: INCR <key>"
     ERROR_EMPTY_COMMAND = "ERROR empty command"
     GET_VALUE = "VALUE {}"
+    VALUE_ERROR_INCR = "Value ERROR amount {} must be an integer"
+    ERROR_NOT_A_NUMBER = "ERROR value is not a number: {}"
 
 
 def handle_command(store: KVStore, line: str) -> str:
@@ -108,7 +112,7 @@ def handle_command(store: KVStore, line: str) -> str:
             return Messages.NOT_FOUND.value
     elif op == "EXISTS":
         if len(command_list) < 2:
-            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value
         key = command_list[1]
         if store.exists(key):
             return Messages.TRUE.value
@@ -116,9 +120,12 @@ def handle_command(store: KVStore, line: str) -> str:
             return Messages.FALSE.value
     elif op == "EXPIRE":
         if len(command_list) < 3:
-            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+            return Messages.ERROR_USAGE_EXPIRE.value
         key = command_list[1]
-        seconds = float(command_list[2])
+        try:
+            seconds = float(command_list[2])
+        except ValueError:
+            return Messages.ERROR_NOT_A_NUMBER.value.format(command_list[2])
         found = store.expire(key, seconds)
         if found:
             return Messages.OK.value
@@ -130,19 +137,25 @@ def handle_command(store: KVStore, line: str) -> str:
         key = command_list[1]
         try:
             ttl = store.ttl(key)
-            if not ttl:
+            if ttl is None:
                 ttl = -1
             return Messages.GET_VALUE.value.format(int(ttl))
         except KeyNotFoundError:
             return Messages.NOT_FOUND.value
     elif op == "INCR":
         if len(command_list) < 2:
-            return Messages.ERROR_USAGE_GET_DEL_EXISTS.value.format(op)
+            return Messages.ERROR_USAGE_INCR.value
         key = command_list[1]
         amount = 1
         if len(command_list) == 3:
-            amount = int(command_list[2])
-        total = store.incr(key, amount)
+            try:
+                amount = int(command_list[2])
+            except ValueError:
+                return Messages.VALUE_ERROR_INCR.value.format(command_list[2])
+            try:
+                total = store.incr(key, amount)
+            except ValueError:
+                return Messages.ERROR_NOT_A_NUMBER.value.format(key)
         return Messages.GET_VALUE.value.format(total)
     else:
         return Messages.ERROR_UNKNOWN_COMMAND.value.format(op)
