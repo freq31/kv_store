@@ -32,7 +32,9 @@ by subclassing KVStore: the in-memory logic is inherited; you only add the disk 
 from __future__ import annotations
 
 import json
+import os
 import time
+import zlib
 from pathlib import Path
 
 from kvstore.store import KVStore
@@ -57,7 +59,11 @@ class PersistentKVStore(KVStore):
         then write a newline "\\n" so each record sits on its own line.
         """
         with open(self._path, "a") as f:
+            # compute checksum for data integrity
+            record = self._store_checksum(record)
             f.write(json.dumps(record) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
         self._log_entries += 1
 
@@ -72,6 +78,36 @@ class PersistentKVStore(KVStore):
         if expiry > now:
             return (False, expiry - now)
         return (True, None)
+
+    def _store_checksum(self, record: dict) -> dict:
+        crc = self._checksum(record)
+        record["crc"] = crc
+        return record
+
+    def _is_corrupt_record(self, record: dict) -> bool:
+        actual_crc = record["crc"]
+        record.pop("crc", None)
+        current_crc = self._checksum(record)
+        return not (actual_crc == current_crc)
+
+    def _checksum(self, record: dict) -> int:
+        """Return a CRC32 checksum of `record` (which must NOT contain a 'crc' key).
+
+        A checksum is a short number derived from the bytes of the record. If even one
+        byte changes on disk — corruption, a torn write, tampering — the recomputed
+        checksum won't match the stored one, so we can DETECT bad data on reload instead
+        of silently loading garbage.
+
+        Implement:
+            import zlib   # add at the top of the file
+            payload = json.dumps(record, sort_keys=True)   # sort_keys => stable bytes
+            return zlib.crc32(payload.encode())
+
+        `sort_keys=True` is essential: it makes serialization deterministic so the write
+        side and the read side hash exactly the same bytes.
+        """
+        payload = json.dumps(record, sort_keys=True)
+        return zlib.crc32(payload.encode())
 
     def _load(self) -> None:
         """Replay the log file to rebuild self._data.
@@ -88,12 +124,23 @@ class PersistentKVStore(KVStore):
         """
         count = 0
         if self._path.exists():
-            with open(self._path) as f:
-                for line in f:
+            with open(self._path, "r+") as f:
+                while True:
+                    offset = f.tell()
+                    line = f.readline()
+
+                    if not line:
+                        break
+
                     line = line.strip()
                     if line:
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            f.seek(offset)
+                            f.truncate()  # drop the torn line + everything after
+                            break
                         count += 1
-                        record = json.loads(line)
                         if record["op"] == "set":
                             ttl = None
                             expiry = self._get_expiry(record)
@@ -101,8 +148,17 @@ class PersistentKVStore(KVStore):
                                 (is_expired, ttl) = self._get_ttl(expiry)
                                 if is_expired:
                                     continue
+                            if self._is_corrupt_record(record):
+                                f.seek(offset)
+                                f.truncate()  # drop the torn line + everything after
+                                break
+
                             super().set(record["key"], record["value"], ttl)
                         elif record["op"] == "delete":
+                            if self._is_corrupt_record(record):
+                                f.seek(offset)
+                                f.truncate()  # drop the torn line + everything after
+                                break
                             super().delete(record["key"])
                         elif record["op"] == "expire":
                             expiry = self._get_expiry(record)
@@ -113,6 +169,10 @@ class PersistentKVStore(KVStore):
                                 self._data.pop(record["key"], None)
                                 self._expiry.pop(record["key"], None)
                             elif ttl is not None:
+                                if self._is_corrupt_record(record):
+                                    f.seek(offset)
+                                    f.truncate()  # drop the torn line + everything after
+                                    break
                                 super().expire(record["key"], ttl)
 
         with self._lock:
@@ -205,8 +265,6 @@ class PersistentKVStore(KVStore):
         After compaction: the log has exactly len(self._data) lines, and the data is
         unchanged — including after a restart.
         """
-        import os
-
         with self._lock:
             temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
             expired_keys = []
@@ -219,8 +277,10 @@ class PersistentKVStore(KVStore):
                             expired_keys.append(key)
                             continue
                         record = {"op": "set", "key": key, "value": value, "expiry": expiry}
+                        record = self._store_checksum(record)
                     else:
                         record = {"op": "set", "key": key, "value": value}
+                        record = self._store_checksum(record)
                     f.write(json.dumps(record) + "\n")
 
             for key in expired_keys:
