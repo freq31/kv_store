@@ -39,10 +39,14 @@ from kvstore.store import KVStore
 
 
 class PersistentKVStore(KVStore):
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, auto_compact_threshold: int = 1000) -> None:
         # Sets up an empty self._data dict (Milestone 1's __init__).
         super().__init__()
         self._path = Path(path)
+        # Milestone 7: auto-compaction. Track how many records the log holds so we can
+        # compact automatically once it grows too large relative to the live key count.
+        self._auto_compact_threshold = auto_compact_threshold
+        self._log_entries = 0
         # Rebuild state from the log file (if one exists) before serving requests.
         self._load()
 
@@ -54,6 +58,8 @@ class PersistentKVStore(KVStore):
         """
         with open(self._path, "a") as f:
             f.write(json.dumps(record) + "\n")
+
+        self._log_entries += 1
 
     def _get_expiry(self, record: dict) -> float | None:
         expiry = record.get("expiry", None)
@@ -80,11 +86,13 @@ class PersistentKVStore(KVStore):
         IMPORTANT: write to self._data DIRECTLY here. Do NOT call self.set()/self.delete()
         during replay, or you'd append the whole history back onto the log every startup.
         """
+        count = 0
         if self._path.exists():
             with open(self._path) as f:
                 for line in f:
                     line = line.strip()
                     if line:
+                        count += 1
                         record = json.loads(line)
                         if record["op"] == "set":
                             ttl = None
@@ -107,6 +115,9 @@ class PersistentKVStore(KVStore):
                             elif ttl is not None:
                                 super().expire(record["key"], ttl)
 
+        with self._lock:
+            self._log_entries = count
+
     def set(self, key: str, value: str, ttl: float | None = None) -> None:
         """Persist the write, then apply it in memory.
 
@@ -123,6 +134,7 @@ class PersistentKVStore(KVStore):
             else:
                 self._append({"op": "set", "key": key, "value": value})
             super().set(key, value, ttl)
+            self._maybe_compact()
 
     def delete(self, key: str) -> None:
         """Persist the delete, then apply it in memory.
@@ -134,13 +146,40 @@ class PersistentKVStore(KVStore):
         with self._lock:
             super().delete(key)
             self._append({"op": "delete", "key": key})
+            self._maybe_compact()
 
     def expire(self, key: str, seconds: float) -> bool:
         with self._lock:
             isPresent = super().expire(key, seconds)
             if isPresent:
                 self._append({"op": "expire", "key": key, "expiry": time.time() + seconds})
+                self._maybe_compact()
             return isPresent
+
+    def _maybe_compact(self) -> None:
+        """Compact automatically once the log has grown too large.
+
+        Milestone 7. The log grows by one line per write; compaction shrinks it back
+        to one line per live key. We want to compact when the log has a lot of *dead*
+        weight (overwrites + deletes), but NOT every write, and NOT just because the
+        dataset is legitimately big.
+
+        A good trigger:
+            self._log_entries >= max(self._auto_compact_threshold, 2 * len(self._data))
+
+        - The `2 * len(self._data)` term means "compact once the log is ~twice the size
+          it would be if compacted" — i.e. roughly half the log is dead weight. This
+          scales with the dataset so a store with 1M live keys doesn't compact until
+          the log hits ~2M entries.
+        - The `threshold` term is a floor so tiny stores don't compact on every write.
+
+        If the trigger fires, call self.compact() (which will reset self._log_entries).
+
+        Call this at the END of every write path (set / delete / expire), after the
+        record has been appended.
+        """
+        if self._log_entries >= max(self._auto_compact_threshold, 2 * len(self._data)):
+            self.compact()
 
     def compact(self) -> None:
         """Rewrite the log so it holds only the CURRENT state — one 'set' per key.
@@ -170,18 +209,24 @@ class PersistentKVStore(KVStore):
 
         with self._lock:
             temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+            expired_keys = []
             with open(temp_path, "w") as f:
                 for key, value in self._data.items():
                     now = time.time()
                     expiry = self._expiry.get(key, None)
                     if expiry is not None:
                         if expiry <= now:
-                            self._data.pop(key, None)
-                            self._expiry.pop(key, None)
+                            expired_keys.append(key)
                             continue
                         record = {"op": "set", "key": key, "value": value, "expiry": expiry}
                     else:
                         record = {"op": "set", "key": key, "value": value}
                     f.write(json.dumps(record) + "\n")
+
+            for key in expired_keys:
+                self._data.pop(key, None)
+                self._expiry.pop(key, None)
+
+            self._log_entries = len(self._data)
 
             os.replace(temp_path, self._path)
