@@ -11,10 +11,12 @@ restarts, and can be talked to over a network. We build up to that in milestones
 
 ## Roadmap
 
-- [ ] **Milestone 1 — In-memory core (today):** `set` / `get` / `delete` / `exists` / `keys`, backed by a dict, with tests.
-- [ ] **Milestone 2 — Persistence:** save writes to disk (append-only log) so data survives a restart.
-- [ ] **Milestone 3 — Network server:** talk to the store over TCP or HTTP.
-- [ ] **Milestone 4 — Extras:** TTL/expiry, LRU eviction, benchmarks.
+- [x] **Milestone 1 — In-memory core:** `set` / `get` / `delete` / `exists` / `keys`, backed by a dict, with tests.
+- [x] **Milestone 2 — Persistence:** append-only log on disk so data survives a restart.
+- [x] **Milestone 3 — Network server:** talk to the store over TCP with a line-based text protocol.
+- [x] **Milestone 4 — Concurrency & compaction:** a lock for thread-safe writes, atomic `INCR`, and log compaction.
+- [x] **Milestone 5 — TTL / expiry:** keys that auto-expire (lazy expiration), plus `INCR` / `EXPIRE` / `TTL` over the network.
+- [ ] **Milestone 6 — Durable expiry & background maintenance:** persist TTLs across restarts, actively evict expired keys, and auto-trigger compaction.
 
 ## Setup
 
@@ -32,6 +34,8 @@ python3 -m venv .venv
 ## Project layout
 
 ```
-src/kvstore/store.py   # the KVStore class — the code you write
-tests/test_store.py    # the spec: make every test pass
+src/kvstore/store.py             # KVStore: in-memory core, locking, INCR, TTL
+src/kvstore/persistent_store.py  # PersistentKVStore: append-only log + compaction
+src/kvstore/server.py            # TCP server + text-protocol command handler
+tests/                           # one spec file per area — make every test pass
 ```

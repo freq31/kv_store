@@ -35,6 +35,9 @@ class KVStore:
         # Milestone 5: absolute expiry time (epoch seconds) for keys that have a TTL.
         # A key is in here only if it has a TTL; plain keys never appear.
         self._expiry: dict[str, float] = {}
+        # Milestone 6: background sweeper that actively evicts expired keys.
+        self._sweeper_thread: threading.Thread | None = None
+        self._sweeper_stop = threading.Event()
 
     def set(self, key: str, value: str, ttl: float | None = None) -> None:
         """Store `value` under `key`. Overwrites if the key already exists.
@@ -156,3 +159,67 @@ class KVStore:
                 time_rem = self._expiry[key] - time.time()
                 return time_rem
             return None
+
+    # ------------------------------------------------------------------
+    # Milestone 6 — active expiration (a background sweeper thread)
+    # ------------------------------------------------------------------
+
+    def _sweep_expired(self) -> int:
+        """Remove ALL currently-expired keys in one pass. Return how many were removed.
+
+        Lazy expiration (Milestone 5) only drops a key when someone touches it, so an
+        expired key nobody looks at sits in memory forever. This is the *active* half:
+        a single sweep that evicts every expired key right now. The background thread
+        below calls this on a timer.
+
+        Note: build the `expired` list FIRST, then delete — you can't delete from a
+        dict while iterating over it.
+        """
+        with self._lock:
+            now = time.time()
+            expired = [key for key, value in self._expiry.items() if now >= value]
+            for key in expired:
+                self._data.pop(key, None)
+                self._expiry.pop(key, None)
+            return len(expired)
+
+    def start_expiry_sweeper(self, interval: float = 1.0) -> None:
+        """Start a background thread that calls _sweep_expired() every `interval` seconds.
+
+        Steps:
+          1. If a sweeper is already running (self._sweeper_thread is not None), just return.
+          2. Clear the stop flag: self._sweeper_stop.clear()
+          3. Define a loop that runs until stopped:
+                 while not self._sweeper_stop.wait(interval):
+                     self._sweep_expired()
+             (Event.wait returns True the moment stop() is called — so the loop exits
+             promptly — and returns False on timeout, which is when you sweep.)
+          4. Start it as a daemon thread and store it in self._sweeper_thread.
+        """
+        with self._lock:
+            if self._sweeper_thread is not None:
+                return None
+
+            self._sweeper_stop.clear()
+
+            def loop() -> None:
+                while not self._sweeper_stop.wait(interval):
+                    self._sweep_expired()
+
+            self._sweeper_thread = threading.Thread(target=loop, daemon=True)
+            self._sweeper_thread.start()
+
+    def stop_expiry_sweeper(self) -> None:
+        """Stop the background sweeper and wait for the thread to finish.
+
+        Set self._sweeper_stop, join the thread (with a timeout), then reset
+        self._sweeper_thread back to None so it can be started again later.
+        """
+        self._sweeper_stop.set()
+
+        thread = self._sweeper_thread
+
+        if thread is not None:
+            thread.join(5.0)
+
+        self._sweeper_thread = None

@@ -32,6 +32,7 @@ by subclassing KVStore: the in-memory logic is inherited; you only add the disk 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from kvstore.store import KVStore
@@ -54,6 +55,18 @@ class PersistentKVStore(KVStore):
         with open(self._path, "a") as f:
             f.write(json.dumps(record) + "\n")
 
+    def _get_expiry(self, record: dict) -> float | None:
+        expiry = record.get("expiry", None)
+        if expiry is not None:
+            return float(expiry)
+        return None
+
+    def _get_ttl(self, expiry: float) -> tuple[bool, float | None]:
+        now = time.time()
+        if expiry > now:
+            return (False, expiry - now)
+        return (True, None)
+
     def _load(self) -> None:
         """Replay the log file to rebuild self._data.
 
@@ -74,9 +87,25 @@ class PersistentKVStore(KVStore):
                     if line:
                         record = json.loads(line)
                         if record["op"] == "set":
-                            super().set(record["key"], record["value"])
+                            ttl = None
+                            expiry = self._get_expiry(record)
+                            if expiry is not None:
+                                (is_expired, ttl) = self._get_ttl(expiry)
+                                if is_expired:
+                                    continue
+                            super().set(record["key"], record["value"], ttl)
                         elif record["op"] == "delete":
                             super().delete(record["key"])
+                        elif record["op"] == "expire":
+                            expiry = self._get_expiry(record)
+                            if expiry is None:
+                                continue
+                            (is_expired, ttl) = self._get_ttl(expiry)
+                            if is_expired:
+                                self._data.pop(record["key"], None)
+                                self._expiry.pop(record["key"], None)
+                            elif ttl is not None:
+                                super().expire(record["key"], ttl)
 
     def set(self, key: str, value: str, ttl: float | None = None) -> None:
         """Persist the write, then apply it in memory.
@@ -89,7 +118,10 @@ class PersistentKVStore(KVStore):
         restart. Persisting expiry (a new log field + replay handling) is Milestone 6.
         """
         with self._lock:
-            self._append({"op": "set", "key": key, "value": value})
+            if ttl is not None:
+                self._append({"op": "set", "key": key, "value": value, "expiry": time.time() + ttl})
+            else:
+                self._append({"op": "set", "key": key, "value": value})
             super().set(key, value, ttl)
 
     def delete(self, key: str) -> None:
@@ -102,6 +134,13 @@ class PersistentKVStore(KVStore):
         with self._lock:
             super().delete(key)
             self._append({"op": "delete", "key": key})
+
+    def expire(self, key: str, seconds: float) -> bool:
+        with self._lock:
+            isPresent = super().expire(key, seconds)
+            if isPresent:
+                self._append({"op": "expire", "key": key, "expiry": time.time() + seconds})
+            return isPresent
 
     def compact(self) -> None:
         """Rewrite the log so it holds only the CURRENT state — one 'set' per key.
@@ -133,7 +172,16 @@ class PersistentKVStore(KVStore):
             temp_path = self._path.with_suffix(self._path.suffix + ".tmp")
             with open(temp_path, "w") as f:
                 for key, value in self._data.items():
-                    record = {"op": "set", "key": key, "value": value}
+                    now = time.time()
+                    expiry = self._expiry.get(key, None)
+                    if expiry is not None:
+                        if expiry <= now:
+                            self._data.pop(key, None)
+                            self._expiry.pop(key, None)
+                            continue
+                        record = {"op": "set", "key": key, "value": value, "expiry": expiry}
+                    else:
+                        record = {"op": "set", "key": key, "value": value}
                     f.write(json.dumps(record) + "\n")
 
             os.replace(temp_path, self._path)
