@@ -1,0 +1,40 @@
+[project]
+name = "kvstore"
+version = "0.1.0"
+description = "A small key-value store, built from scratch to learn storage internals."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "pre-commit", "ruff", "mypy"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+# Match the minimum Python version the project supports.
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# A friendly-but-useful starter rule set:
+#   E/W = style errors, F = real bugs (unused vars/imports), I = import sorting,
+#   UP = modern-Python upgrades, B = common bug patterns (bugbear).
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+# Sensible starting strictness — asks for type hints on functions without being brutal.
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true

@@ -1,0 +1,33 @@
+# Pre-commit runs these checks automatically every time you `git commit`.
+# If any check fails, the commit is blocked until you fix it — so broken or
+# messy code never even makes it into your history.
+#
+# First-time setup (once per clone):   ./.venv/bin/pre-commit install
+# Run on all files manually any time:  ./.venv/bin/pre-commit run --all-files
+
+repos:
+  # --- Basic hygiene: small, universally-useful file checks ---
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace        # strips trailing spaces at line ends
+      - id: end-of-file-fixer          # ensures files end with exactly one newline
+      - id: check-yaml                 # catches broken YAML (like this file)
+      - id: check-toml                 # catches broken TOML (pyproject.toml)
+      - id: check-added-large-files    # blocks accidentally committing huge files
+      - id: check-merge-conflict       # blocks committing unresolved merge markers
+
+  # --- Linting + formatting: Ruff (fast, replaces flake8 + isort + black) ---
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.22
+    hooks:
+      - id: ruff                       # the linter: finds bugs, unused imports, etc.
+        args: [--fix, --show-fixes]    # auto-fix what it safely can, and print what it fixed
+      - id: ruff-format                # the formatter: auto-rewrites code to a consistent style
+
+  # --- Type checking: mypy verifies your type hints line up ---
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
+    hooks:
+      - id: mypy
+        files: ^src/                   # type-check the library code, not the tests
